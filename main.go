@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+var lock = sync.RWMutex{}
+
 // DB contains information for current db connection
 type DB struct {
 	sync.RWMutex
@@ -24,6 +26,7 @@ type DB struct {
 	logger            logger
 	search            *search
 	values            sync.Map
+	queryCounters     map[int64]int
 
 	// global db
 	parent        *DB
@@ -79,10 +82,11 @@ func Open(dialect string, args ...interface{}) (db *DB, err error) {
 	}
 
 	db = &DB{
-		db:        dbSQL,
-		logger:    defaultLogger,
-		callbacks: DefaultCallback,
-		dialect:   newDialect(dialect, dbSQL),
+		db:            dbSQL,
+		logger:        defaultLogger,
+		callbacks:     DefaultCallback,
+		dialect:       newDialect(dialect, dbSQL),
+		queryCounters: make(map[int64]int, 0),
 	}
 	db.parent = db
 	if err != nil {
@@ -155,6 +159,26 @@ func (s *DB) LogMode(enable bool) *DB {
 		s.logMode = noLogMode
 	}
 	return s
+}
+
+func (s *DB) StartCountingQueries(queryCounterID int64) *DB {
+	lock.Lock()
+	defer lock.Unlock()
+
+	if _, ok := s.queryCounters[queryCounterID]; !ok {
+		s.queryCounters[queryCounterID] = 0
+	}
+
+	return s
+}
+
+func (s *DB) StopCountingQueries(queryCounterID int64) int {
+	lock.Lock()
+	defer func() {
+		delete(s.queryCounters, queryCounterID)
+		lock.Unlock()
+	}()
+	return s.queryCounters[queryCounterID]
 }
 
 // BlockGlobalUpdate if true, generates an error on update/delete without where clause.
@@ -803,7 +827,12 @@ func (s *DB) log(v ...interface{}) {
 }
 
 func (s *DB) slog(sql string, t time.Time, vars ...interface{}) {
+	lock.Lock()
+	defer lock.Unlock()
 	if s.logMode == detailedLogMode {
 		s.print("sql", fileWithLineNum(), NowFunc().Sub(t), sql, vars, s.RowsAffected)
+	}
+	for id, _ := range s.queryCounters {
+		s.queryCounters[id]++
 	}
 }
